@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Neon Racer - Missions Edition</title>
+<style>
+    body { margin:0; background:#050505; font-family:monospace; overflow:hidden; color:white; touch-action: none; }
+    #ui { 
+        position:absolute; top:10px; left:15px; z-index:10; 
+        pointer-events: none; text-shadow: 1px 1px 2px black;
+    }
+    .bar-container { display: inline-block; vertical-align: top; margin-right: 15px; }
+    .bar { width:80px; height:6px; background:#222; margin-top:4px; border: 1px solid #444; overflow:hidden;}
+    .fill { height:100%; width: 100%; transition: width 0.2s; }
+    #nitro-fill { background: linear-gradient(90deg, #0066ff, #00f2ff); }
+    #fuel-fill { background: linear-gradient(90deg, #ff6a00, #ffae00); }
+    
+    #mission-tracker {
+        margin-top: 10px; color: #00f2ff; font-size: 11px;
+        background: rgba(0,0,0,0.3); padding: 5px; border-radius: 4px;
+    }
+
+    #overlay {
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.9); display: none; flex-direction: column;
+        justify-content: center; align-items: center; z-index: 100; text-align: center;
+    }
+    button { 
+        padding: 15px 40px; font-family: monospace; font-size: 18px; font-weight: bold;
+        background: #e74c3c; color: white; border: none; cursor: pointer; margin-top: 25px;
+        border-radius: 5px; box-shadow: 0 4px #c0392b;
+    }
+    button:active { transform: translateY(2px); box-shadow: 0 2px #c0392b; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+    <div style="font-size: 20px; font-weight: bold; margin-bottom: 5px;">
+        <span id="score-display">0</span> <small style="font-size: 10px; color: #aaa;">BEST: <span id="highscore-display">0</span></small>
+    </div>
+    <div class="bar-container">
+        <div style="font-size: 9px;">NITRO</div>
+        <div class="bar"><div id="nitro-fill" class="fill"></div></div>
+    </div>
+    <div class="bar-container">
+        <div style="font-size: 9px;">FUEL</div>
+        <div class="bar"><div id="fuel-fill" class="fill"></div></div>
+    </div>
+    <div id="mission-tracker">
+        MISSION: <span id="mission-desc">Drive 500m</span> 
+        (<span id="mission-prog">0</span>/<span id="mission-goal">500</span>)
+    </div>
+</div>
+
+<div id="overlay">
+    <h1 id="msg" style="color:#e74c3c; font-size: 40px; margin: 0;">CRASHED!</h1>
+    <div id="final-score" style="font-size: 20px; margin-top: 10px;">SCORE: 0</div>
+    <button onclick="location.reload()">PLAY AGAIN</button>
+</div>
+
+<canvas id="roadCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById("roadCanvas");
+const ctx = canvas.getContext("2d");
+
+const state = {
+    width: 0, height: 0, roadW: 0,
+    speed: 0, maxSpeed: 14, accel: 0.25, friction: 0.97,
+    carX: 0, carY: 0, roadOffset: 0,
+    traffic: [], fuelPacks: [], buildings: [],
+    nitro: 100, fuel: 100, isNitroActive: false,
+    score: 0, highScore: localStorage.getItem("highScore") || 0,
+    nearMissTimer: 0, paused: false,
+    
+    // Mission System State
+    missions: [
+        { id: 'dist', goal: 500, prog: 0, desc: "Drive [G]m", step: 500, reward: 200 },
+        { id: 'miss', goal: 5, prog: 0, desc: "Get [G] Near Misses", step: 5, reward: 500 },
+        { id: 'fuel', goal: 3, prog: 0, desc: "Collect [G] Fuel Packs", step: 2, reward: 400 }
+    ],
+    curMissionIdx: 0,
+    toastTimer: 0
+};
+
+const keys = {};
+onkeydown = e => { keys[e.key] = true; if(e.key.includes("Arrow")) e.preventDefault(); };
+onkeyup = e => keys[e.key] = false;
+
+window.addEventListener('touchstart', e => {
+    if(state.paused) return;
+    const touchX = e.touches[0].clientX;
+    if (touchX < window.innerWidth / 2) keys["ArrowLeft"] = true;
+    else keys["ArrowRight"] = true;
+    keys["ArrowUp"] = true;
+}, {passive: false});
+
+window.addEventListener('touchend', () => { keys["ArrowLeft"] = keys["ArrowRight"] = false; });
+
+function resize() {
+    state.width = window.innerWidth;
+    state.height = window.innerHeight;
+    canvas.width = state.width;
+    canvas.height = state.height;
+    state.roadW = Math.min(state.width * 0.8, 320);
+    if(!state.carX) { state.carX = state.width / 2; state.carY = state.height * 0.8; }
+}
+window.addEventListener('resize', resize);
+resize();
+
+function updateMission(type, amt = 1) {
+    let m = state.missions[state.curMissionIdx];
+    if (m.id === type) {
+        m.prog += amt;
+        if (m.prog >= m.goal) {
+            state.score += m.reward;
+            state.toastTimer = 100; // Frames to show success message
+            m.prog = 0;
+            m.goal += m.step; // Increase difficulty
+            state.curMissionIdx = (state.curMissionIdx + 1) % state.missions.length;
+        }
+    }
+}
+
+function gameOver(reason) {
+    state.paused = true;
+    document.getElementById("msg").innerText = reason;
+    document.getElementById("final-score").innerText = "FINAL SCORE: " + Math.floor(state.score);
+    document.getElementById("overlay").style.display = "flex";
+}
+
+function drawCar(x, y, color, isPlayer = false) {
+    ctx.save();
+    ctx.translate(x, y);
+    if(isPlayer && state.speed > 1) {
+        if(keys["ArrowLeft"]) ctx.rotate(-0.06);
+        if(keys["ArrowRight"]) ctx.rotate(0.06);
+    }
+    const w = 24, h = 44;
+    ctx.fillStyle = "rgba(0,0,0,0.4)";
+    ctx.beginPath(); ctx.ellipse(0, h/2, 14, 5, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.roundRect(-w/2, -h/2, w, h, 4); ctx.fill();
+    ctx.fillStyle = "rgba(0,0,0,0.4)";
+    ctx.fillRect(-w/2+3, -h/2+8, w-6, 10);
+    ctx.fillStyle = isPlayer ? "#fff" : "#ff3333";
+    let lY = isPlayer ? -h/2 : h/2-3;
+    ctx.fillRect(-w/2+2, lY, 5, 3); ctx.fillRect(w/2-7, lY, 5, 3);
+    if(isPlayer && state.isNitroActive) {
+        ctx.fillStyle = "#00f2ff";
+        ctx.beginPath(); ctx.moveTo(-4, h/2); ctx.lineTo(0, h/2+15+Math.random()*10); ctx.lineTo(4, h/2); ctx.fill();
+    }
+    ctx.restore();
+}
+
+function update() {
+    if(state.paused) return;
+    if(state.speed > 1) state.fuel -= 0.01;
+    if(state.fuel <= 0) return gameOver("OUT OF FUEL!");
+
+    state.isNitroActive = (keys[" "] || (keys["ArrowUp"] && state.speed > 12)) && state.nitro > 0;
+    if(state.isNitroActive) state.nitro -= 0.8;
+    else if(state.nitro < 100) state.nitro += 0.2;
+
+    let maxS = state.isNitroActive ? 20 : state.maxSpeed;
+    if(keys["ArrowUp"]) state.speed += (state.isNitroActive ? 0.4 : 0.2);
+    if(keys["ArrowDown"]) state.speed -= 0.4;
+    state.speed *= state.friction;
+    state.speed = Math.max(0, Math.min(state.speed, maxS));
+
+    if(state.speed > 0.1) {
+        if(keys["ArrowLeft"]) state.carX -= 5;
+        if(keys["ArrowRight"]) state.carX += 5;
+    }
+    state.roadOffset += state.speed;
+
+    const roadL = (state.width - state.roadW) / 2;
+    const roadR = (state.width + state.roadW) / 2;
+
+    // Building Generation
+    if (state.buildings.length < 15 && Math.random() < 0.1) {
+        const side = Math.random() > 0.5 ? 'left' : 'right';
+        const bW = 40 + Math.random() * 50;
+        let bX = side === 'left' ? Math.random() * (roadL - bW - 10) : roadR + 10 + Math.random() * (state.width - roadR - bW - 10);
+        state.buildings.push({ x: bX, y: -300, w: bW, h: 100 + Math.random() * 150, shade: 8 + Math.random() * 12 });
+    }
+    state.buildings.forEach((b, i) => { b.y += state.speed; if(b.y > state.height + 200) state.buildings.splice(i, 1); });
+
+    // Traffic & Near Miss Mission
+    if(state.traffic.length < 4 && Math.random() < 0.02) {
+        state.traffic.push({ x: roadL + 20 + Math.random()*(state.roadW-40), y: -100, speed: 2.5 + Math.random()*3, passed: false });
+    }
+    state.traffic.forEach((npc, i) => {
+        npc.y += (state.speed - npc.speed);
+        const dx = Math.abs(state.carX - npc.x), dy = Math.abs(state.carY - npc.y);
+        if(!npc.passed && dx < 45 && dy < 30) { 
+            state.score += 100; npc.passed = true; state.nearMissTimer = 30; 
+            updateMission('miss', 1);
+        }
+        if(npc.y > state.height + 100) state.traffic.splice(i, 1);
+        if(dx < 20 && dy < 38) gameOver("CRASHED!");
+    });
+
+    // Fuel & Fuel Mission
+    if(state.fuelPacks.length < 1 && Math.random() < 0.006) {
+        state.fuelPacks.push({ x: roadL + 30 + Math.random()*(state.roadW-60), y: -100 });
+    }
+    state.fuelPacks.forEach((fp, i) => {
+        fp.y += state.speed;
+        if(Math.hypot(state.carX - fp.x, state.carY - fp.y) < 30) {
+            state.fuel = Math.min(100, state.fuel + 40);
+            state.fuelPacks.splice(i, 1);
+            updateMission('fuel', 1);
+        }
+    });
+
+    // Distance Mission
+    updateMission('dist', state.speed / 60);
+
+    state.carX = Math.max(roadL + 12, Math.min(state.carX, roadR - 12));
+    state.score += state.speed / 150;
+    if(state.score > state.highScore) { state.highScore = Math.floor(state.score); localStorage.setItem("highScore", state.highScore); }
+    
+    // UI Updates
+    let curM = state.missions[state.curMissionIdx];
+    document.getElementById("nitro-fill").style.width = state.nitro + "%";
+    document.getElementById("fuel-fill").style.width = state.fuel + "%";
+    document.getElementById("score-display").innerText = Math.floor(state.score);
+    document.getElementById("highscore-display").innerText = state.highScore;
+    document.getElementById("mission-desc").innerText = curM.desc.replace("[G]", curM.goal);
+    document.getElementById("mission-prog").innerText = Math.floor(curM.prog);
+    document.getElementById("mission-goal").innerText = curM.goal;
+}
+
+function draw() {
+    ctx.fillStyle = "#080808";
+    ctx.fillRect(0, 0, state.width, state.height);
+    const roadL = (state.width - state.roadW) / 2;
+    ctx.fillStyle = "#151515";
+    ctx.fillRect(roadL, 0, state.roadW, state.height);
+    ctx.fillStyle = "#222";
+    ctx.fillRect(roadL - 8, 0, 8, state.height);
+    ctx.fillRect(roadL + state.roadW, 0, 8, state.height);
+    ctx.strokeStyle = "#f1c40f";
+    ctx.setLineDash([30, 40]); ctx.lineWidth = 2; ctx.lineDashOffset = -state.roadOffset;
+    ctx.beginPath(); ctx.moveTo(state.width/2, 0); ctx.lineTo(state.width/2, state.height); ctx.stroke();
+    ctx.setLineDash([]);
+
+    state.buildings.forEach(b => {
+        ctx.fillStyle = `hsl(230, 10%, ${b.shade}%)`;
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.fillStyle = "rgba(255,255,180,0.1)";
+        for(let wy=15; wy < b.h-10; wy+=25) {
+            for(let wx=8; wx < b.w-10; wx+=15) { ctx.fillRect(b.x + wx, b.y + wy, 4, 6); }
+        }
+    });
+
+    state.fuelPacks.forEach(fp => {
+        ctx.fillStyle = "#ffae00";
+        ctx.beginPath(); ctx.roundRect(fp.x-10, fp.y-12, 20, 24, 3); ctx.fill();
+        ctx.fillStyle = "white"; ctx.font = "bold 12px monospace";
+        ctx.textAlign = "center"; ctx.fillText("F", fp.x, fp.y+4);
+    });
+
+    state.traffic.forEach(npc => drawCar(npc.x, npc.y, "#3d3d3d"));
+    drawCar(state.carX, state.carY, "#e74c3c", true);
+
+    if(state.nearMissTimer > 0) {
+        ctx.fillStyle = "#00f2ff"; ctx.font = "bold 20px monospace"; ctx.textAlign = "center";
+        ctx.fillText("NEAR MISS +100", state.carX, state.carY - 50);
+        state.nearMissTimer--;
+    }
+
+    if(state.toastTimer > 0) {
+        ctx.fillStyle = "#2ecc71"; ctx.font = "bold 24px monospace"; ctx.textAlign = "center";
+        ctx.fillText("MISSION COMPLETE!", state.width/2, 150);
+        state.toastTimer--;
+    }
+
+    update();
+    requestAnimationFrame(draw);
+}
+
+draw();
+</script>
+</body>
+</html>
