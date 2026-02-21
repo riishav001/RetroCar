@@ -21,6 +21,50 @@
         background: rgba(0,0,0,0.3); padding: 5px; border-radius: 4px;
     }
 
+    /* Start Screen Styles */
+    #start-screen {
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.85); display: flex; flex-direction: column;
+        justify-content: center; align-items: center; z-index: 200; text-align: center;
+    }
+    #title-text {
+        color: white; font-size: 50px; margin: 0; text-shadow: 3px 3px 0px #bc7070;
+        letter-spacing: 2px;
+    }
+    .controls-text {
+        color: #aaa; font-size: 14px; margin-top: 15px; line-height: 1.5;
+    }
+    .start-btn {
+        background: #2ecc71; box-shadow: 0 4px #27ae60;
+    }
+    .start-btn:active { box-shadow: 0 2px #27ae60; }
+
+    /* Countdown Styles */
+    #countdown-screen {
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        display: none; justify-content: center; align-items: center; z-index: 150;
+        pointer-events: none;
+    }
+    #countdown-text {
+        color: white; font-size: 120px; font-weight: bold; margin: 0; 
+        text-shadow: 4px 4px 0px #bc7070;
+    }
+
+    /* Pause Screen Styles */
+    #pause-screen {
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.8); display: none; flex-direction: column;
+        justify-content: center; align-items: center; z-index: 120; text-align: center;
+    }
+    #pause-btn-ui {
+        position: absolute; top: 15px; right: 15px; z-index: 110;
+        background: rgba(0,0,0,0.6); color: white; border: 1px solid #aaa;
+        padding: 8px 15px; font-family: monospace; font-size: 14px; font-weight: bold;
+        cursor: pointer; display: none; border-radius: 4px; margin-top: 0; box-shadow: none;
+    }
+    #pause-btn-ui:active { transform: translateY(1px); background: rgba(255,255,255,0.2); }
+
+    /* Game Over Styles */
     #overlay {
         position: fixed; top: 0; left: 0; width: 100%; height: 100%;
         background: rgba(0,0,0,0.9); display: none; flex-direction: column;
@@ -28,13 +72,33 @@
     }
     button { 
         padding: 15px 40px; font-family: monospace; font-size: 18px; font-weight: bold;
-        background: #e74c3c; color: white; border: none; cursor: pointer; margin-top: 25px;
-        border-radius: 5px; box-shadow: 0 4px #c0392b;
+        color: white; border: none; cursor: pointer; margin-top: 25px;
+        border-radius: 5px; background: #e74c3c; box-shadow: 0 4px #c0392b;
     }
     button:active { transform: translateY(2px); box-shadow: 0 2px #c0392b; }
 </style>
 </head>
 <body>
+
+<button id="pause-btn-ui" onclick="togglePause()">PAUSE</button>
+
+<div id="start-screen">
+    <h1 id="title-text">RETRO CAR</h1>
+    <div class="controls-text">
+        <strong>DESKTOP:</strong> Arrow Keys to Drive & Steer. Press 'P' to Pause.<br>
+        <strong>MOBILE:</strong> Tap Left/Right side of screen.
+    </div>
+    <button class="start-btn" onclick="startCountdown()">START GAME</button>
+</div>
+
+<div id="countdown-screen">
+    <h1 id="countdown-text">3</h1>
+</div>
+
+<div id="pause-screen">
+    <h1 style="color:#f1c40f; font-size: 50px; margin: 0; letter-spacing: 2px;">PAUSED</h1>
+    <button class="start-btn" onclick="togglePause()">RESUME</button>
+</div>
 
 <div id="ui">
     <div style="font-size: 20px; font-weight: bold; margin-bottom: 5px;">
@@ -73,7 +137,10 @@ const state = {
     traffic: [], fuelPacks: [], buildings: [],
     nitro: 100, fuel: 100, isNitroActive: false,
     score: 0, highScore: localStorage.getItem("highScore") || 0,
-    nearMissTimer: 0, paused: false,
+    nearMissTimer: 0, 
+    paused: true, 
+    hasStarted: false,
+    isGameOver: false,
     
     // Mission System State
     missions: [
@@ -86,18 +153,28 @@ const state = {
 };
 
 const keys = {};
-onkeydown = e => { keys[e.key] = true; if(e.key.includes("Arrow")) e.preventDefault(); };
+onkeydown = e => { 
+    keys[e.key] = true; 
+    if(e.key.includes("Arrow") || e.key === " ") e.preventDefault(); 
+    if(e.key.toLowerCase() === 'p' || e.key === 'Escape') togglePause();
+};
 onkeyup = e => keys[e.key] = false;
 
 window.addEventListener('touchstart', e => {
-    if(state.paused) return;
+    if(state.paused || state.isGameOver) return;
+    if(e.target.tagName === 'BUTTON') return; // Prevent steering when clicking buttons
+    
     const touchX = e.touches[0].clientX;
     if (touchX < window.innerWidth / 2) keys["ArrowLeft"] = true;
     else keys["ArrowRight"] = true;
     keys["ArrowUp"] = true;
 }, {passive: false});
 
-window.addEventListener('touchend', () => { keys["ArrowLeft"] = keys["ArrowRight"] = false; });
+window.addEventListener('touchend', e => { 
+    if(e.target.tagName !== 'BUTTON') {
+        keys["ArrowLeft"] = keys["ArrowRight"] = false; 
+    }
+});
 
 function resize() {
     state.width = window.innerWidth;
@@ -109,6 +186,45 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 resize();
+
+function startCountdown() {
+    document.getElementById('start-screen').style.display = 'none';
+    const countdownScreen = document.getElementById('countdown-screen');
+    const countdownText = document.getElementById('countdown-text');
+    
+    countdownScreen.style.display = 'flex';
+    let count = 3;
+    countdownText.innerText = count;
+
+    const interval = setInterval(() => {
+        count--;
+        if (count > 0) {
+            countdownText.innerText = count;
+        } else if (count === 0) {
+            countdownText.innerText = "GO!";
+        } else {
+            clearInterval(interval);
+            countdownScreen.style.display = 'none';
+            document.getElementById('pause-btn-ui').style.display = 'block';
+            state.paused = false; 
+            state.hasStarted = true;
+        }
+    }, 1000);
+}
+
+function togglePause() {
+    // Prevent pausing if the game hasn't started or is already over
+    if (!state.hasStarted || state.isGameOver) return;
+
+    state.paused = !state.paused;
+    if (state.paused) {
+        document.getElementById('pause-screen').style.display = 'flex';
+        document.getElementById('pause-btn-ui').innerText = '► PLAY';
+    } else {
+        document.getElementById('pause-screen').style.display = 'none';
+        document.getElementById('pause-btn-ui').innerText = 'II PAUSE';
+    }
+}
 
 function updateMission(type, amt = 1) {
     let m = state.missions[state.curMissionIdx];
@@ -126,6 +242,8 @@ function updateMission(type, amt = 1) {
 
 function gameOver(reason) {
     state.paused = true;
+    state.isGameOver = true;
+    document.getElementById('pause-btn-ui').style.display = 'none';
     document.getElementById("msg").innerText = reason;
     document.getElementById("final-score").innerText = "FINAL SCORE: " + Math.floor(state.score);
     document.getElementById("overlay").style.display = "flex";
@@ -134,7 +252,7 @@ function gameOver(reason) {
 function drawCar(x, y, color, isPlayer = false) {
     ctx.save();
     ctx.translate(x, y);
-    if(isPlayer && state.speed > 1) {
+    if(isPlayer && state.speed > 1 && !state.paused) {
         if(keys["ArrowLeft"]) ctx.rotate(-0.06);
         if(keys["ArrowRight"]) ctx.rotate(0.06);
     }
@@ -148,7 +266,7 @@ function drawCar(x, y, color, isPlayer = false) {
     ctx.fillStyle = isPlayer ? "#fff" : "#ff3333";
     let lY = isPlayer ? -h/2 : h/2-3;
     ctx.fillRect(-w/2+2, lY, 5, 3); ctx.fillRect(w/2-7, lY, 5, 3);
-    if(isPlayer && state.isNitroActive) {
+    if(isPlayer && state.isNitroActive && !state.paused) {
         ctx.fillStyle = "#00f2ff";
         ctx.beginPath(); ctx.moveTo(-4, h/2); ctx.lineTo(0, h/2+15+Math.random()*10); ctx.lineTo(4, h/2); ctx.fill();
     }
@@ -157,7 +275,10 @@ function drawCar(x, y, color, isPlayer = false) {
 
 function update() {
     if(state.paused) return;
-    if(state.speed > 1) state.fuel -= 0.01;
+    
+    // Fuel Consumption
+    if(state.speed > 1) state.fuel -= 0.06; 
+    
     if(state.fuel <= 0) return gameOver("OUT OF FUEL!");
 
     state.isNitroActive = (keys[" "] || (keys["ArrowUp"] && state.speed > 12)) && state.nitro > 0;
@@ -213,6 +334,8 @@ function update() {
             state.fuel = Math.min(100, state.fuel + 40);
             state.fuelPacks.splice(i, 1);
             updateMission('fuel', 1);
+        } else if (fp.y > state.height + 100) {
+            state.fuelPacks.splice(i, 1); // Remove missed fuel packs so new ones can spawn
         }
     });
 
@@ -234,7 +357,7 @@ function update() {
     document.getElementById("mission-goal").innerText = curM.goal;
 }
 
-function draw() {
+function drawGameLoop() {
     ctx.fillStyle = "#080808";
     ctx.fillRect(0, 0, state.width, state.height);
     const roadL = (state.width - state.roadW) / 2;
@@ -270,21 +393,24 @@ function draw() {
     if(state.nearMissTimer > 0) {
         ctx.fillStyle = "#00f2ff"; ctx.font = "bold 20px monospace"; ctx.textAlign = "center";
         ctx.fillText("NEAR MISS +100", state.carX, state.carY - 50);
-        state.nearMissTimer--;
+        if(!state.paused) state.nearMissTimer--;
     }
 
     if(state.toastTimer > 0) {
         ctx.fillStyle = "#2ecc71"; ctx.font = "bold 24px monospace"; ctx.textAlign = "center";
         ctx.fillText("MISSION COMPLETE!", state.width/2, 150);
-        state.toastTimer--;
+        if(!state.paused) state.toastTimer--;
     }
-
-    update();
-    requestAnimationFrame(draw);
 }
 
-draw();
+function loop() {
+    update();
+    drawGameLoop();
+    requestAnimationFrame(loop);
+}
+
+// Start the animation loop
+loop();
 </script>
 </body>
-
 </html>
